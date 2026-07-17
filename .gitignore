@@ -1,0 +1,16 @@
+# Build and release artifacts
+[Bb]in/
+[Oo]bj/
+publish/
+GameControllerMapper-win-x64-background-fix/
+*.zip
+
+# Local IDE and user settings
+.vs/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Local diagnostics
+*-test.txt
