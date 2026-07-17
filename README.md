@@ -4,7 +4,7 @@
 
 ## 下载与运行
 
-直接下载仓库根目录的 `GameControllerMapper-win-x64-background-fix.zip`，解压后运行 `GameControllerMapper.exe`。压缩包已包含完整构建输出及 `GameInputRedist.msi`；仅在系统提示缺少 GameInput 时安装该 MSI。
+[下载完整 Windows x64 程序包](GameControllerMapper-win-x64-background-fix.zip)，解压后运行 `GameControllerMapper.exe`。压缩包已包含完整构建输出及 `GameInputRedist.msi`；仅在系统提示缺少 GameInput 时安装该 MSI。
 
 ## 功能
 
