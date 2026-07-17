@@ -2,6 +2,10 @@
 
 面向 Windows 11 x64 的手柄键盘/鼠标映射工具。使用 Microsoft GameInput 读取已被 Windows 识别的有线或蓝牙手柄；最小化后仍可继续映射。
 
+## 下载与运行
+
+直接下载仓库根目录的 `GameControllerMapper-win-x64-background-fix.zip`，解压后运行 `GameControllerMapper.exe`。压缩包已包含完整构建输出及 `GameInputRedist.msi`；仅在系统提示缺少 GameInput 时安装该 MSI。
+
 ## 功能
 
 - 按键映射为键盘组合键、鼠标按键或滚轮

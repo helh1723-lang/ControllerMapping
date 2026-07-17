@@ -199,29 +199,224 @@ public partial class MainWindow : Window
 
     private void EditBinding_Click(object sender, RoutedEventArgs e)
     {
-        if ((sender as FrameworkElement)?.DataContext is not MappingRow row) return;…12691 tokens truncated…ateDirectory(directory);
-        var temporary = FilePath + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(document, _json));
-        File.Move(temporary, FilePath, true);
+        if ((sender as FrameworkElement)?.DataContext is not MappingRow row) return;
+        _engine.Disable();
+        var dialog = new BindingCaptureDialog { Owner = this };
+        if (dialog.ShowDialog() != true || dialog.Binding is null) return;
+        CurrentProfile.Bindings[row.SourceId] = dialog.Binding;
+        ApplyProfileChange();
     }
 
-    public string Serialize(ProfileDocument document) => JsonSerializer.Serialize(document, _json);
-    public ProfileDocument? Deserialize(string json) => JsonSerializer.Deserialize<ProfileDocument>(json, _json);
-
-    private static void Normalize(ProfileDocument document)
+    private void ClearBinding_Click(object sender, RoutedEventArgs e)
     {
-        if (document.Profiles.Count == 0) document.Profiles.Add(new MappingProfile());
-        foreach (var profile in document.Profiles)
-        {
-            profile.Name = string.IsNullOrWhiteSpace(profile.Name) ? "未命名配置" : profile.Name.Trim();
-            profile.Bindings ??= new(StringComparer.Ordinal);
-            profile.StickDeadzone = Math.Clamp(profile.StickDeadzone, 0, 0.9);
-            profile.DirectionThreshold = Math.Clamp(profile.DirectionThreshold, 0.1, 1);
-            profile.TriggerThreshold = Math.Clamp(profile.TriggerThreshold, 0.05, 1);
-            profile.MouseSpeed = Math.Clamp(profile.MouseSpeed, 50, 5000);
-        }
-
-        if (document.Profiles.All(x => x.Id != document.SelectedProfileId))
-            document.SelectedProfileId = document.Profiles[0].Id;
+        if ((sender as FrameworkElement)?.DataContext is not MappingRow row) return;
+        _engine.Disable();
+        CurrentProfile.Bindings.Remove(row.SourceId);
+        ApplyProfileChange();
     }
+
+    private void SettingsChanged(object sender, EventArgs e)
+    {
+        if (_loading || !IsInitialized) return;
+        var profile = CurrentProfile;
+        if (LeftStickModeCombo.SelectedItem is ModeOption left) profile.LeftStickMode = left.Value;
+        if (RightStickModeCombo.SelectedItem is ModeOption right) profile.RightStickMode = right.Value;
+        profile.StickDeadzone = DeadzoneSlider.Value;
+        profile.DirectionThreshold = DirectionSlider.Value;
+        profile.TriggerThreshold = TriggerSlider.Value;
+        profile.MouseSpeed = MouseSpeedSlider.Value;
+        UpdateSettingLabels();
+        ApplyProfileChange(false);
+    }
+
+    private void UpdateSettingLabels()
+    {
+        DeadzoneLabel.Text = $"摇杆死区：{DeadzoneSlider.Value:0.00}";
+        DirectionLabel.Text = $"方向触发阈值：{DirectionSlider.Value:0.00}";
+        TriggerLabel.Text = $"扳机触发阈值：{TriggerSlider.Value:0.00}";
+        MouseSpeedLabel.Text = $"鼠标速度：{MouseSpeedSlider.Value:0} 像素/秒";
+    }
+
+    private void ApplyProfileChange(bool rebuildRows = true)
+    {
+        _engine.SetProfile(CurrentProfile);
+        SaveProfiles();
+        if (rebuildRows) BuildRows();
+    }
+
+    private void SaveProfiles()
+    {
+        try { _profileStore.Save(_document); }
+        catch (Exception ex) { StatusText.Text = $"保存配置失败：{ex.Message}"; }
+    }
+
+    private void NewProfile_Click(object sender, RoutedEventArgs e)
+    {
+        var name = TextPromptDialog.Ask(this, "新建配置", "配置名称", $"配置 {_document.Profiles.Count + 1}");
+        if (name is null) return;
+        var profile = new MappingProfile { Name = name };
+        _document.Profiles.Add(profile);
+        _document.SelectedProfileId = profile.Id;
+        LoadProfiles();
+        SaveProfiles();
+    }
+
+    private void CopyProfile_Click(object sender, RoutedEventArgs e)
+    {
+        var copy = CurrentProfile.Clone(CurrentProfile.Name + " - 副本");
+        _document.Profiles.Add(copy);
+        _document.SelectedProfileId = copy.Id;
+        LoadProfiles();
+        SaveProfiles();
+    }
+
+    private void RenameProfile_Click(object sender, RoutedEventArgs e)
+    {
+        var name = TextPromptDialog.Ask(this, "重命名配置", "新名称", CurrentProfile.Name);
+        if (name is null) return;
+        CurrentProfile.Name = name;
+        LoadProfiles();
+        SaveProfiles();
+    }
+
+    private void DeleteProfile_Click(object sender, RoutedEventArgs e)
+    {
+        if (_document.Profiles.Count == 1)
+        {
+            System.Windows.MessageBox.Show(this, "至少需要保留一套配置。", "无法删除", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (System.Windows.MessageBox.Show(this, $"删除“{CurrentProfile.Name}”？", "确认删除", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        _engine.Disable();
+        _document.Profiles.Remove(CurrentProfile);
+        _document.SelectedProfileId = _document.Profiles[0].Id;
+        LoadProfiles();
+        SaveProfiles();
+    }
+
+    private void RefreshDevices_Click(object sender, RoutedEventArgs e) => RefreshDevices();
+
+    private void OnDevicesChanged() => Dispatcher.BeginInvoke(RefreshDevices);
+    private void OnEngineEnabledChanged(bool enabled) => Dispatcher.BeginInvoke(() =>
+    {
+        SetToggle(enabled);
+        StatusText.Text = enabled ? "映射正在运行。" : "映射已关闭。";
+    });
+
+    private void OnEngineError(string message) => Dispatcher.BeginInvoke(() =>
+    {
+        StatusText.Text = message;
+        _trayIcon.BalloonTipTitle = "手柄键鼠映射";
+        _trayIcon.BalloonTipText = message;
+        _trayIcon.ShowBalloonTip(2500);
+    });
+
+    private void OnSnapshotUpdated(InputSnapshot snapshot) => Dispatcher.BeginInvoke(() => UpdatePreview(snapshot));
+
+    private void UpdatePreview(InputSnapshot snapshot)
+    {
+        var names = SourceCatalog.Standard.Where(x => snapshot.Buttons.Contains(x.Id)).Select(x => x.DisplayName).ToList();
+        if (snapshot.LeftTrigger >= CurrentProfile.TriggerThreshold) names.Add("LT 扳机");
+        if (snapshot.RightTrigger >= CurrentProfile.TriggerThreshold) names.Add("RT 扳机");
+        LiveButtonsText.Text = names.Count == 0 ? "无" : string.Join("、", names);
+        LiveRawText.Text = snapshot.RawButtons.Count == 0 ? "无" : string.Join("、", snapshot.RawButtons.Order().Select(x => $"原始按钮 {x + 1}"));
+        LiveAxesText.Text = $"左摇杆  X {snapshot.LeftX,6:0.00}  Y {snapshot.LeftY,6:0.00}    LT {snapshot.LeftTrigger:0.00}\n" +
+                            $"右摇杆  X {snapshot.RightX,6:0.00}  Y {snapshot.RightY,6:0.00}    RT {snapshot.RightTrigger:0.00}";
+
+        foreach (var row in _rows)
+            row.IsActive = MappingEngine.IsActive(row.SourceId, snapshot, row.IsActive, CurrentProfile);
+    }
+
+    private void MainWindow_SourceInitialized(object? sender, EventArgs e)
+    {
+        _windowHandle = new WindowInteropHelper(this).Handle;
+        _windowSource = HwndSource.FromHwnd(_windowHandle);
+        _windowSource?.AddHook(WindowMessageHook);
+        if (!RegisterHotKey(_windowHandle, HotkeyId, 0x0001 | 0x0002, 0x7B))
+            System.Windows.MessageBox.Show(this, "无法注册 Ctrl+Alt+F12，全局紧急关闭热键可能被其他程序占用。主界面和托盘开关仍可使用。", "热键不可用", MessageBoxButton.OK, MessageBoxImage.Warning);
+    }
+
+    private nint WindowMessageHook(nint hwnd, int message, nint wParam, nint lParam, ref bool handled)
+    {
+        if (message == WmHotkey && wParam == HotkeyId)
+        {
+            _engine.Disable();
+            handled = true;
+        }
+        return 0;
+    }
+
+    private void ShowFromTray()
+    {
+        Show();
+        WindowState = WindowState.Normal;
+        Activate();
+    }
+
+    private void MainWindow_Closing(object? sender, CancelEventArgs e)
+    {
+        try
+        {
+            _engine.Disable();
+            SaveProfiles();
+            if (_windowHandle != 0) UnregisterHotKey(_windowHandle, HotkeyId);
+            _windowSource?.RemoveHook(WindowMessageHook);
+            _trayIcon.Visible = false;
+            _trayIcon.Dispose();
+            _engine.Dispose();
+            _controllers.Dispose();
+        }
+        finally
+        {
+            Environment.Exit(0);
+        }
+    }
+
+    private static string FormatBinding(OutputBinding? binding)
+    {
+        if (binding is null) return "未设置";
+        return binding.Kind switch
+        {
+            OutputKind.Keyboard => string.Join(" + ", binding.Keys.Select(KeyName)),
+            OutputKind.MouseButton => binding.MouseButton switch
+            {
+                MouseButtonOutput.Left => "鼠标左键", MouseButtonOutput.Right => "鼠标右键",
+                MouseButtonOutput.Middle => "鼠标中键", MouseButtonOutput.X1 => "鼠标侧键 1", _ => "鼠标侧键 2"
+            },
+            OutputKind.MouseWheel => binding.WheelDelta > 0 ? "滚轮向上" : "滚轮向下",
+            _ => "未设置"
+        };
+    }
+
+    internal static string KeyName(ushort key) => key switch
+    {
+        0x10 => "Shift", 0x11 => "Ctrl", 0x12 => "Alt", 0x5B => "Win",
+        _ => KeyInterop.KeyFromVirtualKey(key).ToString()
+    };
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool RegisterHotKey(nint window, int id, uint modifiers, uint virtualKey);
+    [DllImport("user32.dll")]
+    private static extern bool UnregisterHotKey(nint window, int id);
+
+    private sealed record ModeOption(string Label, StickMode Value);
+}
+
+public sealed class MappingRow : INotifyPropertyChanged
+{
+    private bool _isActive;
+    public string SourceId { get; }
+    public string DisplayName { get; }
+    public string BindingText { get; }
+    public bool IsActive
+    {
+        get => _isActive;
+        set { if (_isActive == value) return; _isActive = value; OnPropertyChanged(); }
+    }
+
+    public MappingRow(string sourceId, string displayName, string bindingText) =>
+        (SourceId, DisplayName, BindingText) = (sourceId, displayName, bindingText);
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+    private void OnPropertyChanged([CallerMemberName] string? name = null) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
 }
